@@ -118,14 +118,13 @@ def main():
             print("[ERROR] Kamera tidak terdeteksi.")
             break
 
-        # Resize frame untuk mempercepat proses (penting untuk RPi nanti)
-        small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
-        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+    # Gunakan ukuran frame asli
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # 1. Cari lokasi dan landmark wajah di frame
-        face_locations = face_recognition.face_locations(rgb_small_frame)
-        face_landmarks_list = face_recognition.face_landmarks(rgb_small_frame, face_locations)
-
+        face_locations = face_recognition.face_locations(rgb_frame)
+        face_landmarks_list = face_recognition.face_landmarks(rgb_frame, face_locations)
+    
         # Jika tidak ada wajah di frame, reset status liveness
         if len(face_locations) == 0:
             liveness_status = False
@@ -133,7 +132,7 @@ def main():
 
         for (top, right, bottom, left), face_landmarks in zip(face_locations, face_landmarks_list):
             # Kembalikan koordinat wajah ke ukuran asli frame
-            top, right, bottom, left = top * 2, right * 2, bottom * 2, left * 2
+            # top, right, bottom, left = top * 2, right * 2, bottom * 2, left * 2
 
             # 2. Proses Liveness Detection (Cek Kedipan)
             if not liveness_status:
@@ -154,8 +153,9 @@ def main():
             # 3. Proses Face Recognition (Hanya jika liveness = True)
             else:
                 if nama_terdeteksi is None:
-                    # Ambil encoding wajah di area yang ditemukan
-                    face_encodings = face_recognition.face_encodings(rgb_small_frame, [(top//2, right//2, bottom//2, left//2)])
+                    # Ambil encoding wajah di area yang ditemukan (gunakan rgb_frame dan koordinat asli)
+                    face_encodings = face_recognition.face_encodings(rgb_frame, [(top, right, bottom, left)])
+
                     if len(face_encodings) > 0:
                         nama_terdeteksi = face_auth.recognize_face(face_encodings[0])
 
