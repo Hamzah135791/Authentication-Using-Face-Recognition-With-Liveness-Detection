@@ -8,7 +8,7 @@ import math
 class BlinkDetector:
     """
     Class khusus untuk menangani Liveness Detection (Blink Detection) menggunakan EAR.
-    Sangat modular sehingga algoritma Liveness bisa diganti di masa depan.
+    Sangat modular sehingga algoritma Liveness bisa diganti di masa depan..
     """
     def __init__(self, ear_threshold=0.25, consec_frames=2):
         self.ear_threshold = ear_threshold
