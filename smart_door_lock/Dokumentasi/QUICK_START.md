@@ -283,4 +283,4 @@ Jika ada error atau pertanyaan:
 
 **Happy coding dan semoga skripsi sukses! 🎓✨**
 
-Kalau ada pertanyaan atau perlu modifikasi lebih lanjut, jangan ragu untuk ask!
+Kalau ada pertanyaan atau perlu modifikasi lebih lanjut, jangan ragu untuk ask! 
