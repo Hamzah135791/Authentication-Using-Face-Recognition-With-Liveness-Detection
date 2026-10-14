@@ -1,0 +1,32 @@
+# ===============================================
+# REQUIREMENTS.TXT - Python Dependencies
+# ===============================================
+
+# Core Libraries
+numpy>=1.19.0
+opencv-python>=4.5.0
+
+# MediaPipe untuk Face Detection & Landmarks
+# Gunakan mediapipe untuk PC/Laptop
+mediapipe>=0.8.0
+
+# Face Recognition untuk Face Encoding & Matching
+face-recognition>=1.3.0
+
+# Image Processing
+pillow>=8.0.0
+scikit-image>=0.18.0
+
+# Optional: untuk logging dan utilities
+tqdm>=4.50.0
+
+# ===============================================
+# NOTES UNTUK RASPBERRY PI
+# ===============================================
+# Untuk Raspberry Pi 3, install:
+# pip install mediapipe-rpi
+# (ganti dengan mediapipe-rpi untuk versi yang lebih ringan)
+#
+# Face-recognition di Raspberry Pi memerlukan:
+# sudo apt-get install python3-dev libblas-dev liblapack-dev libblas3 liblapack3 libatlas-base-dev libjasper-dev libtiff5 libjasper1 libharfbuzz0b libwebp6
+# pip install dlib face-recognition
