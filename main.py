@@ -1,23 +1,3 @@
-#!/usr/bin/env python3
-"""
-Face Recognition + Liveness Detection (Eye Aspect Ratio / kedipan mata)
-Dioptimalkan untuk Raspberry Pi 3.
-
-Cara pakai:
-  1. Daftarkan wajah   : python3 face_liveness.py enroll --name Budi
-  2. Jalankan verifikasi: python3 face_liveness.py run
-     (tambahkan --no-display jika Pi dijalankan tanpa monitor)
-
-Logika:
-  - Wajah dikenali lewat face_recognition (dlib, embedding 128-d).
-  - Liveness: EAR dihitung dari 6 titik landmark tiap mata.
-        EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
-    Saat mata terbuka EAR ~0.25-0.35, saat berkedip turun < ~0.21.
-  - Status "ASLI" hanya jika wajah dikenali DAN ada kedipan dalam
-    beberapa detik terakhir.
-"""
-
-import argparse
 import os
 import pickle
 import time
@@ -26,224 +6,154 @@ import cv2
 import numpy as np
 import face_recognition
 
-# ----------------------------- KONFIGURASI -----------------------------
-ENCODINGS_FILE = "encodings.pickle"
+# ---------------- PENGATURAN ----------------
+NAMA = "Hamzah"            # nama yang disimpan saat tekan tombol 'e'
+FILE_DB = "encodings.pickle"
+CAM_INDEX = 1              # coba 1 atau 2 jika kamera salah/hitam
+EAR_THRESHOLD = 0.21       # EAR di bawah ini = mata tertutup
+EAR_FRAMES = 2             # frame berurutan mata tertutup = 1 kedipan
+BLINK_VALID = 10           # detik kedipan dianggap valid
+TOLERANCE = 0.50           # makin kecil makin ketat
 
-CAM_INDEX = 0            # index webcam USB (0 = default)
-FRAME_W, FRAME_H = 320, 240   # resolusi kecil agar ringan di Pi 3
-DETECT_SCALE = 1.0       # turunkan (mis. 0.75) jika masih lambat
+DETECT_SCALE = 0.5         # deteksi di gambar 50% (lebih cepat)
+UPSAMPLE = 1               # 1 = cari wajah lebih teliti (0 = cepat tapi sering miss)
+HOLD_SEC = 0.6             # tahan kotak wajah sekian detik jika deteksi hilang sesaat
+RESET_SEC = 1.5            # reset status jika wajah benar-benar hilang selama ini
+# --------------------------------------------
 
-EAR_THRESHOLD = 0.21     # EAR di bawah ini dianggap mata tertutup
-EAR_CONSEC_FRAMES = 2    # minimal frame berurutan mata tertutup = 1 kedipan
-BLINK_VALID_SEC = 10     # kedipan dianggap valid selama N detik
-MIN_BLINKS = 1           # jumlah kedipan minimal agar dianggap asli
-
-MATCH_TOLERANCE = 0.50   # makin kecil makin ketat (default library 0.6)
-RECOGNIZE_EVERY = 1.0    # detik, interval encoding wajah (berat di Pi)
-LOST_FACE_RESET = 1.5    # detik tanpa wajah -> reset status
-# -----------------------------------------------------------------------
+clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 
-def eye_aspect_ratio(eye_points):
-    """Hitung EAR dari 6 titik landmark mata."""
-    p = np.array(eye_points, dtype=np.float64)
+def perbaiki_cahaya(bgr):
+    """Ratakan kontras agar deteksi lebih stabil di cahaya kurang bagus."""
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+
+
+def hitung_ear(eye):
+    p = np.array(eye, dtype=float)
     a = np.linalg.norm(p[1] - p[5])
     b = np.linalg.norm(p[2] - p[4])
     c = np.linalg.norm(p[0] - p[3])
-    if c == 0:
-        return 0.0
-    return (a + b) / (2.0 * c)
+    return (a + b) / (2.0 * c) if c else 0.0
 
 
-def open_camera():
+# Buka kamera
+if os.name == "nt":
+    cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
+else:
     cap = cv2.VideoCapture(CAM_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    if not cap.isOpened():
-        raise RuntimeError("Kamera tidak bisa dibuka. Cek CAM_INDEX / koneksi.")
-    return cap
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+if not cap.isOpened():
+    raise SystemExit("Kamera tidak bisa dibuka. Ganti CAM_INDEX.")
 
+# Muat database wajah (jika ada)
+known = []
+if os.path.exists(FILE_DB):
+    with open(FILE_DB, "rb") as f:
+        known = pickle.load(f)
 
-def largest_face(locations):
-    """Ambil wajah terbesar (top, right, bottom, left)."""
-    return max(locations, key=lambda l: (l[2] - l[0]) * (l[1] - l[3]))
+nama = "Unknown"
+last_recog = 0
+closed = 0
+blinks = []
+ear = 0.0
+last_loc = None
+last_seen = 0
+pesan, pesan_until = "", 0
 
+print("Tombol: [e] daftarkan wajah | [q] keluar")
 
-def load_db():
-    if not os.path.exists(ENCODINGS_FILE):
-        return {}
-    with open(ENCODINGS_FILE, "rb") as f:
-        return pickle.load(f)
+while True:
+    ok, frame = cap.read()
+    if not ok:
+        continue
+    now = time.time()
 
+    rgb = cv2.cvtColor(perbaiki_cahaya(frame), cv2.COLOR_BGR2RGB)
 
-def save_db(db):
-    with open(ENCODINGS_FILE, "wb") as f:
-        pickle.dump(db, f)
+    # --- Deteksi di gambar yang diperkecil, lalu koordinat dikembalikan ---
+    small = cv2.resize(rgb, (0, 0), fx=DETECT_SCALE, fy=DETECT_SCALE)
+    locs_s = face_recognition.face_locations(
+        small, number_of_times_to_upsample=UPSAMPLE, model="hog")
+    locs = [tuple(int(v / DETECT_SCALE) for v in l) for l in locs_s]
 
-
-# ------------------------------- ENROLL --------------------------------
-def enroll(name, samples=5):
-    cap = open_camera()
-    print(f"Pendaftaran '{name}'. Hadapkan wajah ke kamera.")
-    for i in range(3, 0, -1):
-        print(f"Mulai dalam {i}...")
-        t0 = time.time()
-        while time.time() - t0 < 1:
-            cap.read()
-
-    encodings = []
-    last = 0
-    while len(encodings) < samples:
-        ok, frame = cap.read()
-        if not ok:
-            continue
-        if time.time() - last < 0.7:     # beri jeda antar sampel
-            continue
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        locs = face_recognition.face_locations(rgb, model="hog")
-        if len(locs) != 1:
-            print("Harus tepat 1 wajah terlihat...")
-            last = time.time()
-            continue
-        enc = face_recognition.face_encodings(rgb, locs)[0]
-        encodings.append(enc)
-        last = time.time()
-        print(f"Sampel {len(encodings)}/{samples} tersimpan")
-
-    cap.release()
-    db = load_db()
-    db.setdefault(name, []).extend(encodings)
-    save_db(db)
-    print(f"Selesai. Data disimpan di {ENCODINGS_FILE}")
-
-
-# -------------------------------- RUN ----------------------------------
-def identify(rgb, loc, db):
-    """Cocokkan wajah dengan database. Return nama atau 'Unknown'."""
-    enc = face_recognition.face_encodings(rgb, [loc])
-    if not enc or not db:
-        return "Unknown"
-    best_name, best_dist = "Unknown", 1.0
-    for name, known in db.items():
-        d = face_recognition.face_distance(known, enc[0]).min()
-        if d < best_dist:
-            best_name, best_dist = name, d
-    return best_name if best_dist <= MATCH_TOLERANCE else "Unknown"
-
-
-def run(display=True):
-    db = load_db()
-    if not db:
-        print("Database kosong. Jalankan 'enroll' dulu.")
-        return
-
-    cap = open_camera()
-    name = "Unknown"
-    last_recognize = 0
-    last_seen = time.time()
-
-    closed_frames = 0
-    blink_times = []          # timestamp tiap kedipan
-    ear_value = 0.0
-    prev_status = None
-
-    print("Berjalan. Tekan 'q' untuk keluar (atau Ctrl+C).")
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                continue
-            now = time.time()
-
-            small = frame if DETECT_SCALE == 1.0 else cv2.resize(
-                frame, (0, 0), fx=DETECT_SCALE, fy=DETECT_SCALE)
-            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-
-            locs = face_recognition.face_locations(rgb, model="hog")
-            loc = None
-
-            if locs:
-                last_seen = now
-                loc = largest_face(locs)
-
-                # --- Landmark & EAR (dihitung tiap frame, ringan) ---
-                lm = face_recognition.face_landmarks(rgb, [loc])
-                if lm:
-                    l_ear = eye_aspect_ratio(lm[0]["left_eye"])
-                    r_ear = eye_aspect_ratio(lm[0]["right_eye"])
-                    ear_value = (l_ear + r_ear) / 2.0
-
-                    if ear_value < EAR_THRESHOLD:
-                        closed_frames += 1
-                    else:
-                        if closed_frames >= EAR_CONSEC_FRAMES:
-                            blink_times.append(now)
-                        closed_frames = 0
-
-                # --- Pengenalan wajah (berat, dijalankan berkala) ---
-                if now - last_recognize >= RECOGNIZE_EVERY:
-                    name = identify(rgb, loc, db)
-                    last_recognize = now
-            elif now - last_seen > LOST_FACE_RESET:
-                name = "Unknown"
-                blink_times.clear()
-                closed_frames = 0
-                ear_value = 0.0
-
-            # Buang kedipan yang sudah kedaluwarsa
-            blink_times = [t for t in blink_times if now - t <= BLINK_VALID_SEC]
-
-            # --- Keputusan akhir ---
-            if loc is None:
-                status = "TIDAK ADA WAJAH"
-            elif name == "Unknown":
-                status = "WAJAH TIDAK DIKENAL"
-            elif len(blink_times) >= MIN_BLINKS:
-                status = f"ASLI: {name}"
-            else:
-                status = f"{name} - SILAKAN BERKEDIP"
-
-            if status != prev_status:
-                print(f"[{time.strftime('%H:%M:%S')}] {status} "
-                      f"(EAR={ear_value:.2f}, kedip={len(blink_times)})")
-                prev_status = status
-
-            if display:
-                if loc is not None:
-                    t, r, b, l = [int(v / DETECT_SCALE) for v in loc]
-                    color = (0, 200, 0) if status.startswith("ASLI") else (0, 165, 255)
-                    cv2.rectangle(frame, (l, t), (r, b), color, 2)
-                cv2.putText(frame, status, (5, 18),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                cv2.putText(frame, f"EAR: {ear_value:.2f}  Kedip: {len(blink_times)}",
-                            (5, FRAME_H - 8), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.45, (255, 255, 0), 1)
-                cv2.imshow("Face Liveness", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-
-
-# -------------------------------- MAIN ---------------------------------
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Face recognition + liveness (EAR)")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p_enroll = sub.add_parser("enroll", help="daftarkan wajah baru")
-    p_enroll.add_argument("--name", required=True)
-    p_enroll.add_argument("--samples", type=int, default=5)
-
-    p_run = sub.add_parser("run", help="jalankan verifikasi")
-    p_run.add_argument("--no-display", action="store_true",
-                       help="tanpa jendela video (headless)")
-
-    args = ap.parse_args()
-    if args.cmd == "enroll":
-        enroll(args.name, args.samples)
+    fresh = bool(locs)   # True = wajah terdeteksi di frame ini
+    if locs:
+        loc = max(locs, key=lambda l: (l[2] - l[0]) * (l[1] - l[3]))
+        last_loc, last_seen = loc, now
+    elif last_loc and now - last_seen <= HOLD_SEC:
+        loc = last_loc   # tahan sebentar supaya tidak berkedip-kedip
     else:
-        run(display=not args.no_display)
+        loc = None
+
+    if now - last_seen > RESET_SEC:
+        nama, closed, ear, last_loc = "Unknown", 0, 0.0, None
+        blinks.clear()
+
+    if loc and fresh:
+        # --- EAR tiap frame ---
+        lm = face_recognition.face_landmarks(rgb, [loc])
+        if lm:
+            ear = (hitung_ear(lm[0]["left_eye"]) + hitung_ear(lm[0]["right_eye"])) / 2
+            if ear < EAR_THRESHOLD:
+                closed += 1
+            else:
+                if closed >= EAR_FRAMES:
+                    blinks.append(now)
+                closed = 0
+
+        # --- Pengenalan wajah tiap 0.5 detik ---
+        if known and now - last_recog > 0.5:
+            enc = face_recognition.face_encodings(rgb, [loc])
+            if enc:
+                d = face_recognition.face_distance(known, enc[0]).min()
+                nama = NAMA if d <= TOLERANCE else "Unknown"
+            last_recog = now
+
+    blinks = [t for t in blinks if now - t <= BLINK_VALID]
+
+    # --- Status akhir ---
+    if not loc:
+        status, warna = "TIDAK ADA WAJAH", (0, 0, 255)
+    elif not known:
+        status, warna = "BELUM TERDAFTAR - TEKAN 'e'", (0, 165, 255)
+    elif nama == "Unknown":
+        status, warna = "WAJAH TIDAK DIKENAL", (0, 0, 255)
+    elif blinks:
+        status, warna = f"ASLI: {nama}", (0, 200, 0)
+    else:
+        status, warna = f"{nama} - SILAKAN BERKEDIP", (0, 165, 255)
+
+    # --- Tampilan ---
+    if loc:
+        t, r, b, l = loc
+        cv2.rectangle(frame, (l, t), (r, b), warna, 2)
+    cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, warna, 2)
+    cv2.putText(frame, f"Wajah: {len(locs)} | EAR: {ear:.2f} | Kedip: {len(blinks)}",
+                (10, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    if now < pesan_until:
+        cv2.putText(frame, pesan, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                    (255, 255, 255), 2)
+
+    cv2.imshow("Face Liveness", frame)
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == ord("q"):
+        break
+    if key == ord("e"):
+        if len(locs) == 1:
+            enc = face_recognition.face_encodings(rgb, locs)[0]
+            known.append(enc)
+            with open(FILE_DB, "wb") as f:
+                pickle.dump(known, f)
+            pesan = f"Tersimpan! ({len(known)} sampel) - tekan 'e' lagi 3-5x"
+        else:
+            pesan = f"Gagal: terdeteksi {len(locs)} wajah (harus 1)"
+        pesan_until = now + 2.5
+
+cap.release()
+cv2.destroyAllWindows()
