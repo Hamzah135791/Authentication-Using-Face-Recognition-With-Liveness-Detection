@@ -12,6 +12,7 @@ Arsitektur:
 4. hitung_ear() (Kalkulasi ilmiah EAR Soukupová & Čech, 2016)
 """
 
+import os
 import time
 import abc
 import numpy as np
@@ -79,8 +80,8 @@ class BaseLandmarkDetector(abc.ABC):
 class MediaPipeLandmarkDetector(BaseLandmarkDetector):
     """
     Implementasi detektor landmark menggunakan MediaPipe Face Mesh.
-    Menggunakan arsitektur TFLite terkuantisasi yang sangat efisien
-    dan mampu berjalan mulus di CPU Raspberry Pi 3.
+    Mendukung MediaPipe legacy (<0.10.15) via `solutions.face_mesh`
+    dan MediaPipe modern (>=0.10.20 / 1.x) via Tasks API `FaceLandmarker`.
     """
     # Indeks titik landmark mata standar MediaPipe 468 titik untuk 6-titik EAR:
     # Mata Kanan (perspektif kamera / sisi kiri penonton)
@@ -88,25 +89,67 @@ class MediaPipeLandmarkDetector(BaseLandmarkDetector):
     # Mata Kiri (perspektif kamera / sisi kanan penonton)
     LEFT_EYE_IDX = [362, 385, 387, 263, 373, 380]
 
-    def __init__(self, max_num_faces=1, refine_landmarks=False):
+    def __init__(self, max_num_faces=1, refine_landmarks=False, task_model_path=None):
         try:
             import mediapipe as mp
+            self.mp = mp
         except ImportError:
             raise ImportError(
                 "[ERROR] Library 'mediapipe' belum terinstal! "
                 "Silakan jalankan: pip install mediapipe"
             )
 
-        self.mp_face_mesh = mp.solutions.face_mesh
-        # refine_landmarks=False dipilih untuk kecepatan maksimal di Raspberry Pi 3
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=max_num_faces,
-            refine_landmarks=refine_landmarks,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        print("[INFO] MediaPipe Face Mesh Detector berhasil diinisialisasi.")
+        self.max_num_faces = max_num_faces
+        self.face_mesh = None
+        self.landmarker = None
+
+        # Deteksi versi API MediaPipe: legacy solutions vs modern Tasks API
+        if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
+            self.mode = "solutions"
+            self.mp_face_mesh = mp.solutions.face_mesh
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                static_image_mode=False,
+                max_num_faces=max_num_faces,
+                refine_landmarks=refine_landmarks,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            print("[INFO] MediaPipe Face Mesh (Solutions API) berhasil diinisialisasi.")
+        else:
+            self.mode = "tasks"
+            if task_model_path is None:
+                task_model_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "models",
+                    "face_landmarker.task"
+                )
+            self._ensure_task_model(task_model_path)
+
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+
+            base_options = python.BaseOptions(model_asset_path=task_model_path)
+            options = vision.FaceLandmarkerOptions(
+                base_options=base_options,
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=False,
+                num_faces=max_num_faces,
+                min_face_detection_confidence=0.5,
+                min_face_presence_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            self.landmarker = vision.FaceLandmarker.create_from_options(options)
+            print("[INFO] MediaPipe Face Landmarker (Tasks API) berhasil diinisialisasi.")
+
+    def _ensure_task_model(self, path):
+        """Memastikan model .task MediaPipe tersedia di lokal, jika belum ada otomatis unduh."""
+        if not os.path.exists(path):
+            import urllib.request
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+            print(f"[INFO] Mengunduh model MediaPipe Tasks ({os.path.basename(path)})...")
+            urllib.request.urlretrieve(url, path)
+            print("[INFO] Model MediaPipe Tasks berhasil diunduh.")
 
     def detect(self, frame_bgr) -> LandmarkResult:
         result = LandmarkResult()
@@ -119,21 +162,30 @@ class MediaPipeLandmarkDetector(BaseLandmarkDetector):
 
         # Catat waktu awal inferensi
         t_start = time.perf_counter()
-        mesh_results = self.face_mesh.process(frame_rgb)
-        t_end = time.perf_counter()
 
-        result.inference_time_ms = (t_end - t_start) * 1000.0
+        if self.mode == "solutions":
+            mesh_results = self.face_mesh.process(frame_rgb)
+            t_end = time.perf_counter()
+            result.inference_time_ms = (t_end - t_start) * 1000.0
 
-        if not mesh_results.multi_face_landmarks:
-            return result
+            if not mesh_results.multi_face_landmarks:
+                return result
+            face_lms = mesh_results.multi_face_landmarks[0].landmark
+        else:
+            mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=frame_rgb)
+            task_results = self.landmarker.detect(mp_image)
+            t_end = time.perf_counter()
+            result.inference_time_ms = (t_end - t_start) * 1000.0
 
-        # Ambil landmark wajah pertama
-        face_landmarks = mesh_results.multi_face_landmarks[0]
+            if not task_results.face_landmarks:
+                return result
+            face_lms = task_results.face_landmarks[0]
+
         result.face_detected = True
 
         # Ekstraksi koordinat semua titik dalam satuan piksel
         coords = []
-        for lm in face_landmarks.landmark:
+        for lm in face_lms:
             px = int(lm.x * w)
             py = int(lm.y * h)
             coords.append((px, py))
@@ -169,8 +221,10 @@ class MediaPipeLandmarkDetector(BaseLandmarkDetector):
         return result
 
     def close(self):
-        if hasattr(self, 'face_mesh'):
+        if hasattr(self, 'face_mesh') and self.face_mesh is not None:
             self.face_mesh.close()
+        if hasattr(self, 'landmarker') and self.landmarker is not None:
+            self.landmarker.close()
 
 
 class DlibLandmarkDetector(BaseLandmarkDetector):
@@ -249,13 +303,13 @@ class DlibLandmarkDetector(BaseLandmarkDetector):
         pass
 
 
-def get_landmark_detector(backend="mediapipe", predictor_path=None) -> BaseLandmarkDetector:
+def get_landmark_detector(backend="mediapipe", predictor_path=None, task_model_path=None) -> BaseLandmarkDetector:
     """
     Factory function untuk menginisialisasi detektor landmark yang dipilih.
     """
     backend = backend.lower()
     if backend == "mediapipe":
-        return MediaPipeLandmarkDetector()
+        return MediaPipeLandmarkDetector(task_model_path=task_model_path)
     elif backend == "dlib":
         return DlibLandmarkDetector(predictor_path=predictor_path)
     else:

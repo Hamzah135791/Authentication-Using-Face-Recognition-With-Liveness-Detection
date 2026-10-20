@@ -28,11 +28,11 @@ class VideoStreamThread:
         self.target_height = height
         self.target_fps = fps
 
-        # Pemilihan backend kamera berdasarkan sistem operasi
-        # Di Linux / Raspberry Pi: V4L2 (Video for Linux 2) sangat efisien
-        # Di Windows: DirectShow (CAP_DSHOW)
+        # Pemilihan backend kamera berdasarkan sistem operasi:
+        # Di Linux / Raspberry Pi: V4L2 sangat efisien
+        # Di Windows: CAP_ANY menghindari DirectShow C++ exception pada kamera sekunder/USB
         if os.name == "nt":
-            backend = cv2.CAP_DSHOW
+            backend = cv2.CAP_ANY
         else:
             backend = cv2.CAP_V4L2
 
@@ -41,14 +41,14 @@ class VideoStreamThread:
         self.cap = cv2.VideoCapture(self.src, backend)
 
         # Fallback jika backend tertentu gagal diinisialisasi
-        if not self.cap.isOpened():
+        if not self.cap.isOpened() and backend != cv2.CAP_ANY:
             print(f"[WARNING] Gagal membuka dengan backend spesifik, mencoba CAP_ANY...")
-            self.cap = cv2.VideoCapture(self.src)
+            self.cap = cv2.VideoCapture(self.src, cv2.CAP_ANY)
 
         if not self.cap.isOpened() and self.src != 0:
-            print(f"[WARNING] Kamera index {self.src} tidak ditemukan. Mencoba index 0...")
+            print(f"[WARNING] Kamera index {self.src} tidak dapat dibuka. Mencoba index 0...")
             self.src = 0
-            self.cap = cv2.VideoCapture(self.src)
+            self.cap = cv2.VideoCapture(self.src, cv2.CAP_ANY)
 
         if not self.cap.isOpened():
             raise RuntimeError(

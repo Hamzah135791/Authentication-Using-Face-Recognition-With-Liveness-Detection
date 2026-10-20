@@ -9,7 +9,7 @@ arsitektur model, dan pencatatan metrik skripsi.
 import os
 
 # --- 1. PENGATURAN KAMERA & STREAMING ---
-CAMERA_INDEX = 0             # 0 untuk webcam bawaan/USB, atau path V4L2 device
+CAMERA_INDEX = 1             # 0 untuk webcam bawaan/USB, atau path V4L2 device
 FRAME_WIDTH = 320            # Resolusi rendah 320x240 sesuai kebutuhan Raspberry Pi 3
 FRAME_HEIGHT = 240
 TARGET_FPS = 30
@@ -49,6 +49,7 @@ MOBILEFACENET_MODEL_PATH = os.path.join(MODELS_DIR, "mobilefacenet.tflite")
 MOBILEFACENET_DB_PATH = os.path.join(MODELS_DIR, "mobilefacenet_db.pkl")
 DLIB_ENCODINGS_PATH = os.path.join(BASE_DIR, "encodings.pickle")
 DLIB_PREDICTOR_PATH = os.path.join(MODELS_DIR, "shape_predictor_68_face_landmarks.dat")
+FACE_LANDMARKER_MODEL_PATH = os.path.join(MODELS_DIR, "face_landmarker.task")
 
 # --- 5. LOGGING METRIK SKRIPSI ---
 CSV_LOG_ENABLED = False      # Default false, dapat diaktifkan lewat parameter CLI (--log-csv)

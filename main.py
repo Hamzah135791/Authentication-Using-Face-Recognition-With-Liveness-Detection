@@ -59,7 +59,7 @@ def parse_arguments():
         "--camera",
         type=int,
         default=config.CAMERA_INDEX,
-        help="Indeks perangkat kamera (default: 0)"
+        help=f"Indeks perangkat kamera (default: {config.CAMERA_INDEX})"
     )
     parser.add_argument(
         "--user-name",
@@ -134,7 +134,8 @@ def main():
     try:
         landmark_detector = get_landmark_detector(
             backend=args.detector,
-            predictor_path=config.DLIB_PREDICTOR_PATH
+            predictor_path=config.DLIB_PREDICTOR_PATH,
+            task_model_path=config.FACE_LANDMARKER_MODEL_PATH
         )
     except Exception as e:
         print(f"[FATAL] Gagal menginisialisasi Landmark Detector: {e}")
