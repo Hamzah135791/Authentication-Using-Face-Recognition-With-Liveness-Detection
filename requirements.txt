@@ -1,0 +1,34 @@
+# ==============================================================================
+# DAFTAR DEPENDENSI PYTHON (RASPBERRY PI 3 OPTIMIZED)
+# ==============================================================================
+# Rekomendasi OS: Raspberry Pi OS (64-bit Bullseye atau Bookworm)
+# Hardware: Raspberry Pi 3 Model B / B+ (1 GB RAM, Quad-Core Cortex-A53)
+# ==============================================================================
+
+# 1. Komputasi Visi & Matriks Dasar
+numpy>=1.21.0,<2.0.0
+
+# 2. OpenCV dengan modul Kontribusi (Dibutuhkan untuk cv2.face.LBPHFaceRecognizer)
+# Gunakan opencv-contrib-python agar modul LBPH tersedia.
+opencv-contrib-python>=4.5.5.64
+
+# 3. Deteksi Landmark Wajah (MediaPipe Face Mesh TFLite)
+# Berjalan sangat cepat di Raspberry Pi OS 64-bit
+mediapipe>=0.10.0
+
+# 4. Monitoring Hardware & Metrik Skripsi (CPU %, RAM MB)
+psutil>=5.9.0
+
+# 5. Runtime Inference Ringan untuk MobileFaceNet (Opsional, pengganti TensorFlow)
+# Di Raspberry Pi, sangat disarankan menggunakan tflite-runtime (hanya ~2 MB):
+# pip install tflite-runtime
+# Atau jika menggunakan TensorFlow penuh:
+# tensorflow-lite>=2.8.0
+
+# ==============================================================================
+# DEPENDENSI OPSIONAL (HANYA JIKA MENGGUNAKAN PEMBANDING DLIB)
+# ==============================================================================
+# Catatan: dlib dan face_recognition memakan resource CPU cukup besar di Pi 3.
+# Instal jika ingin melakukan komparasi performa untuk pengujian skripsi:
+# dlib>=19.24.0
+# face_recognition>=1.3.0
